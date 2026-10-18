@@ -1,6 +1,6 @@
 {
   "name": "Anthology",
-  "version": "1.8.25",
+  "version": "1.8.27",
   "author": "falsisdev",
   "description": "Anthology - Türkçe Dizi, Film, Anime ve Canlı TV/Spor Eklenti Deposu",
   "scrapers": [
@@ -83,8 +83,8 @@
     {
       "id": "youtube_dizifilm",
       "name": "YouTube Dizi & Film",
-      "description": "YouTube resmi yapımcı kanalları, yerli dizi ve Yeşilçam film arşivleri, 1080p resmi akışlar.",
-      "version": "1.8.25",
+      "description": "YouTube yapımcı kanalları, yerli dizi ve Yeşilçam arşivleri; kaynağa bağlı HLS/MP4 akışları.",
+      "version": "1.8.27",
       "author": "metemel",
       "supportedTypes": [
         "movie",

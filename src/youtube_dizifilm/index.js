@@ -1,13 +1,20 @@
 const { sortStreamsByQuality } = require('../shared/quality.js');
 const { loadConfig, val, wrapAll } = require('../shared/config.js');
 const { timeoutSignal } = require('../shared/http.js');
-const { normalizeSeriesId, resolveSeriesInfo } = require('../shared/turkish_series.js');
-const { resolveYouTubeMp4 } = require('../shared/ytmp4.js');
+const { normalizeSeriesId } = require('../shared/turkish_series.js');
+const { resolveYouTubeStreams } = require('./playback.js');
+const { createSession } = require('./http.js');
 
 var _cfgReady = null;
+// Temporary local-test marker; visible beside each channel in the source list.
+var BETA_LABEL = ' · BETA 1.8.27';
 function cfgReady() {
     if (!_cfgReady) {
-        _cfgReady = loadConfig().then(function () {
+        var configSession = createSession(500);
+        _cfgReady = loadConfig({ fetchJson: function (url, options) {
+            return configSession.request(url, options, function (res) { return res.json(); });
+        } }).then(function () {
+            configSession.close();
             var v;
             v = val('api_keys.tmdb'); if (v) TMDB_API_KEY = String(v);
             v = val('urls.youtube.innertube_key'); if (v) INNERTUBE_KEY = String(v);
@@ -21,19 +28,11 @@ function cfgReady() {
  * 
  * YouTube üzerinde resmi yapımcılar, TV kanalları (Show TV, Kanal D, Star, TRT vb.)
  * ve film stüdyoları (Arzu Film, Fanatik Film, BKM) tarafından yayınlanan
- * tam bölümler ve yerli sinema filmleri için 1080p doğrudan akış sağlayıcısı.
+ * tam bölümler ve yerli sinema filmleri için doğrulanan HLS/MP4 akışları.
  */
 
 var TMDB_API_KEY = '500330721680edb6d5f7f12ba7cd9023';
 var INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-
-var DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-
-var HEADERS = {
-    'User-Agent': DESKTOP_UA,
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8'
-};
 
 // ── Curated YouTube Vitrin Kataloğu ──────────────────────────────────────────
 
@@ -115,7 +114,9 @@ function matchesEpisode(videoTitle, season, episode, cumEpisode) {
 
     var epCandidates = [episode];
     if (cumEpisode && cumEpisode !== episode) {
-        epCandidates.push(cumEpisode);
+        epCandidates = [cumEpisode];
+        var explicitSeason = norm.match(/(?:^|[^0-9])([1-9]\d?)\s*\.?\s*(?:sezon|season)\b/i);
+        if (explicitSeason && Number(explicitSeason[1]) === Number(season)) epCandidates.push(episode);
     }
 
     var matchedEp = false;
@@ -136,7 +137,7 @@ function matchesEpisode(videoTitle, season, episode, cumEpisode) {
     if (!matchedEp) return false;
 
     // If season > 1, check that an explicitly different season is not mentioned
-    if (season > 1) {
+    if (season >= 1) {
         var otherSeasonRegex = /(?:^|[^0-9])([1-9]\d?)\s*\.?\s*(?:sezon|season)(?:[^0-9]|$)/i;
         var sMatch = norm.match(otherSeasonRegex);
         if (sMatch && parseInt(sMatch[1], 10) !== season) {
@@ -211,8 +212,8 @@ function formatNumberCompact(n) {
  * Dizi ve film adının tam sınırlarını kontrol eder; Pusu, Terör vb. yan yapımları eler.
  */
 function matchesTitle(videoTitle, targetTitle) {
-    var vNorm = asciiFold(videoTitle).toLowerCase();
-    var tNorm = asciiFold(targetTitle).toLowerCase();
+    var vNorm = cleanTitle(videoTitle);
+    var tNorm = cleanTitle(targetTitle);
 
     var tWords = tNorm.split(/\s+/).filter(function (w) { return w.length > 1; });
     var allWords = tWords.length > 0 && tWords.every(function (w) {
@@ -233,86 +234,26 @@ function matchesTitle(videoTitle, targetTitle) {
 
 // ── YouTube Hızlı Arama (Innertube API) ──────────────────────────────────────
 
-async function searchYouTube(query) {
-    // 1. MWEB client (~350KB payload, Nuvio 1MB sınırı için güvenli)
+async function searchYouTube(query, parentSession) {
+    var session = parentSession || createSession(2200);
     try {
-        var resMweb = await fetch('https://www.youtube.com/youtubei/v1/search?key=' + INNERTUBE_KEY, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query: query,
-                context: {
-                    client: {
-                        clientName: 'MWEB',
-                        clientVersion: '2.20240313.00.00',
-                        hl: 'tr',
-                        gl: 'TR'
-                    }
-                }
-            }),
-            signal: timeoutSignal(6000)
-        });
-        if (resMweb.ok) {
-            var dataMweb = await resMweb.json();
-            var resultsMweb = _parseInnertubeMwebSearch(dataMweb);
-            if (resultsMweb.length > 0) return resultsMweb;
+        var clients = ['MWEB', 'WEB'];
+        for (var i = 0; i < clients.length; i++) {
+            var data = await session.request('https://www.youtube.com/youtubei/v1/search?key=' + INNERTUBE_KEY, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: query, context: { client: {
+                    clientName: clients[i], clientVersion: '2.20261002.01.00', hl: 'tr', gl: 'TR'
+                } } })
+            }, function (res) { return res.json(); }, 1100);
+            if (!data) continue;
+            var results = clients[i] === 'MWEB' ? _parseInnertubeMwebSearch(data) : _parseInnertubeWebSearch(data);
+            if (results.length) return results;
         }
-    } catch (e) { }
-
-    // 2. Fallback: WEB client
-    try {
-        var resWeb = await fetch('https://www.youtube.com/youtubei/v1/search?key=' + INNERTUBE_KEY, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query: query,
-                context: {
-                    client: {
-                        clientName: 'WEB',
-                        clientVersion: '2.20240313.00.00',
-                        hl: 'tr',
-                        gl: 'TR'
-                    }
-                }
-            }),
-            signal: timeoutSignal(6000)
-        });
-        if (resWeb.ok) {
-            var dataWeb = await resWeb.json();
-            var results = _parseInnertubeWebSearch(dataWeb);
-            if (results.length > 0) return results;
-        }
-    } catch (e2) { }
-
-    // 3. Fallback: ANDROID client
-    try {
-        var resAnd = await fetch('https://www.youtube.com/youtubei/v1/search?key=' + INNERTUBE_KEY, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
-                'X-Goog-Api-Format-Version': '2'
-            },
-            body: JSON.stringify({
-                query: query,
-                context: {
-                    client: {
-                        clientName: 'ANDROID',
-                        clientVersion: '20.10.38',
-                        hl: 'tr',
-                        gl: 'TR'
-                    }
-                }
-            }),
-            signal: timeoutSignal(6000)
-        });
-        if (resAnd.ok) {
-            var dataAnd = await resAnd.json();
-            return _parseInnertubeAndroidSearch(dataAnd);
-        }
-    } catch (e3) { }
-
-    return [];
+        return [];
+    } finally {
+        if (!parentSession) session.close();
+    }
 }
 
 function _parseInnertubeMwebSearch(data) {
@@ -356,7 +297,9 @@ function _parseInnertubeMwebSearch(data) {
                     channel: channel,
                     views: viewsText,
                     viewsNum: viewsNum,
-                    isVerified: true
+                    isVerified: Array.isArray(v.ownerBadges) && v.ownerBadges.some(function (b) {
+                        return b.metadataBadgeRenderer && /VERIFIED/.test(b.metadataBadgeRenderer.style || '');
+                    })
                 });
             }
         }
@@ -415,59 +358,69 @@ function _parseInnertubeWebSearch(data) {
     return results;
 }
 
-function _parseInnertubeAndroidSearch(data) {
-    var results = [];
-    var seenIds = {};
-    try {
-        var sections = (data && data.contents && data.contents.sectionListRenderer &&
-            data.contents.sectionListRenderer.contents) || [];
-        for (var s = 0; s < sections.length; s++) {
-            var items = (sections[s].itemSectionRenderer && sections[s].itemSectionRenderer.contents) || [];
-            for (var i = 0; i < items.length; i++) {
-                var vr = items[i].compactVideoRenderer || items[i].videoRenderer;
-                if (!vr || !vr.videoId) continue;
-                var vid = vr.videoId;
-                if (seenIds[vid]) continue;
-                seenIds[vid] = true;
-
-                var title = (vr.title && vr.title.runs && vr.title.runs[0] && vr.title.runs[0].text) ||
-                    (vr.title && vr.title.simpleText) || '';
-                var duration = (vr.lengthText && vr.lengthText.simpleText) || '';
-                var channel = (vr.shortBylineText && vr.shortBylineText.runs && vr.shortBylineText.runs[0] && vr.shortBylineText.runs[0].text) ||
-                    (vr.ownerText && vr.ownerText.runs && vr.ownerText.runs[0] && vr.ownerText.runs[0].text) || '';
-                var views = (vr.shortViewCountText && vr.shortViewCountText.runs && vr.shortViewCountText.runs[0] && vr.shortViewCountText.runs[0].text) ||
-                    (vr.viewCountText && vr.viewCountText.simpleText) || '';
-                views = views.replace(/\u00a0/g, ' ').replace(/\s*görüntüleme\s*/i, '').trim();
-
-                var isVerified = false;
-                var badges = vr.badges || vr.ownerBadges;
-                if (Array.isArray(badges)) {
-                    isVerified = badges.some(function (b) {
-                        return b && b.metadataBadgeRenderer && b.metadataBadgeRenderer.style &&
-                            b.metadataBadgeRenderer.style.indexOf('VERIFIED') !== -1;
-                    });
-                }
-
-                results.push({
-                    id: vid,
-                    title: title,
-                    duration: duration,
-                    durationSec: parseDurationSec(duration),
-                    channel: channel,
-                    views: views,
-                    viewsNum: parseViewCount(views),
-                    isVerified: isVerified
-                });
-            }
-        }
-    } catch (e) { }
-    return results;
-}
-
 // ── Stream Resolution ───────────────────────────────────────────────────────
 
+function toStream(source, name, description) {
+    var quality = source.quality || 'Bilinmiyor';
+    return {
+        name: name,
+        title: '⌜ YouTube ⌟ | ' + name + ' (' + quality + ' · ' + (source.isHls ? 'HLS' : 'MP4') + ')',
+        description: description,
+        url: source.url, quality: quality, isHls: source.isHls, format: source.format,
+        provider: 'youtube_dizifilm', headers: source.headers,
+        behaviorHints: {
+            notWebReady: true,
+            headers: source.headers,
+            proxyHeaders: { request: source.headers }
+        }
+    };
+}
+
+// Only title + seasons are needed here. Avoid external_ids/translations/aliases
+// requests in the playback path, and keep metadata within two short requests.
+async function resolveTitleInfo(rawId, type, session) {
+    var norm = normalizeSeriesId(rawId);
+    var isSeries = type === 'tv' || type === 'series';
+    var kind = isSeries ? 'tv' : 'movie';
+    var id = norm.id;
+    var fallback = (isSeries ? POPULAR_DIZILER : POPULAR_FILMLER).find(function (v) { return v.tmdbId === id; });
+    var result = { title: fallback ? fallback.name : (norm.kind === 'title' ? id : ''), seasons: [] };
+    async function json(path) {
+        return session.request('https://api.themoviedb.org/3/' + path +
+            (path.indexOf('?') === -1 ? '?' : '&') + 'api_key=' + TMDB_API_KEY + '&language=tr-TR', {},
+            function (res) { return res.json(); }, 1000);
+    }
+    if (norm.kind === 'imdb') {
+        var found = await json('find/' + id + '?external_source=imdb_id');
+        var hits = found && found[isSeries ? 'tv_results' : 'movie_results'];
+        if (!hits || !hits.length) return result;
+        id = String(hits[0].id);
+        result.title = hits[0].name || hits[0].title || result.title;
+    } else if (norm.kind === 'title') {
+        // A raw title already suffices for movies / season 1 searches.
+        return result;
+    }
+    var data = await json(kind + '/' + id);
+    if (data) {
+        result.title = data.name || data.title || result.title;
+        result.seasons = data.seasons || [];
+    }
+    return result;
+}
+
 async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
+    var session = createSession(9000);
     try {
+        await cfgReady();
+        return await getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, session);
+    } finally {
+        session.close();
+    }
+}
+
+async function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, session) {
+    try {
+        var includeEmbed = !!(tmdbIdOrArgs && typeof tmdbIdOrArgs === 'object' && tmdbIdOrArgs.client === 'stremio');
         var rawId = tmdbIdOrArgs;
         var sNum = seasonNum || 1;
         var eNum = episodeNum || 1;
@@ -480,6 +433,8 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             eNum = tmdbIdOrArgs.episode || tmdbIdOrArgs.episodeNum || eNum;
         }
 
+        sNum = Math.max(1, parseInt(sNum, 10) || 1);
+        eNum = Math.max(1, parseInt(eNum, 10) || 1);
         rawId = String(rawId || '').trim();
 
         // 1. Doğrudan YouTube URL veya video ID'si verilmişse
@@ -487,41 +442,29 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         if (/^[a-zA-Z0-9_-]{11}$/.test(rawId)) {
             directYtId = rawId;
         } else if (rawId.startsWith('youtube:video:')) {
-            directYtId = rawId.replace('youtube:video:', '');
+            var suppliedId = rawId.replace('youtube:video:', '');
+            if (!/^[a-zA-Z0-9_-]{11}$/.test(suppliedId)) return [];
+            directYtId = suppliedId;
         } else if (rawId.includes('youtube.com/') || rawId.includes('youtu.be/')) {
-            var m = rawId.match(/(?:youtube\.com\/(?:embed|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            var m = rawId.match(/(?:youtube\.com\/(?:embed\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
             if (m) directYtId = m[1];
         }
 
         if (directYtId) {
             var streams = [];
-            var streamData = await resolveYouTubeMp4(directYtId);
+            var directStreams = await resolveYouTubeStreams(directYtId, { timeoutMs: session.remaining() });
+            var streamData = directStreams[0];
             var chName = (streamData && streamData.author) || 'YouTube';
-            var badge = getChannelSubscriberBadge(chName, true);
-            var streamName = '📺 ' + chName + (badge ? ' ' + badge : '');
+            var streamName = '📺 ' + chName + BETA_LABEL;
             var vTitle = (streamData && streamData.videoTitle) || '';
             var vViews = streamData && streamData.viewCount ? formatNumberCompact(streamData.viewCount) : '';
             var viewsTag = vViews ? ' · 👁 ' + vViews : '';
-
-            // Nuvio ExoPlayer için doğrudan oynatılabilir MP4/HLS akışı
-            if (streamData && streamData.url) {
-                var qBase = streamData.quality || (streamData.isHls ? '1080p' : '360p');
-                streams.push({
-                    name: streamName,
-                    title: '⌜ YouTube ⌟ | ' + streamName + ' (' + qBase + ')',
-                    description: vTitle + viewsTag,
-                    url: streamData.url,
-                    quality: qBase,
-                    isHls: !!streamData.isHls,
-                    format: streamData.format || (streamData.isHls ? 'hls' : 'mp4'),
-                    provider: 'youtube_dizifilm',
-                    headers: streamData.headers,
-                    behaviorHints: { headers: streamData.headers }
-                });
-            }
+            directStreams.forEach(function (resolved) {
+                streams.push(toStream(resolved, streamName, vTitle + viewsTag));
+            });
 
             // Stremio için YouTube embed akışı (ExoPlayer hatasını önlemek için url boş bırakılır)
-            streams.push({
+            if (includeEmbed) streams.push({
                 name: streamName,
                 title: '⌜ YouTube ⌟ | ' + streamName + ' (YouTube Embed)',
                 description: vTitle + viewsTag,
@@ -529,7 +472,8 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
                 provider: 'youtube_dizifilm'
             });
 
-            return sortStreamsByQuality(streams);
+            return sortStreamsByQuality(streams.filter(function (s) { return !!s.url; }))
+            .concat(streams.filter(function (s) { return !!s.ytId; }));
         }
 
         // 2. Özel katalog ID'si (youtube:tv:34587:1:1 veya youtube:movie:38794)
@@ -551,8 +495,9 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
         // 3. TMDB Kimlik Çözümü (Dinamik)
         var isSeries = (mType === 'tv' || mType === 'series');
-        var info = await resolveSeriesInfo(rawId, mType, TMDB_API_KEY);
-        var targetTitle = info.title || rawId;
+        var info = await resolveTitleInfo(rawId, mType, session);
+        var targetTitle = info.title;
+        if (!targetTitle || session.remaining() <= 0) return [];
 
         // Kümülatif Bölüm Hesaplama (Örn: Kurtlar Vadisi 2. Sezon 1. Bölüm = 21. Bölüm)
         var cumEpisode = eNum;
@@ -582,7 +527,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
         // Paralel Arama (Hızlı yanıt)
         var searchResultsArr = await Promise.all(searchQueries.map(function (q) {
-            return searchYouTube(q);
+            return searchYouTube(q, session);
         }));
 
         var candidateVideos = [];
@@ -642,7 +587,7 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
 
         // Paralel MP4 Çözümü (Nuvio ExoPlayer için)
         var resolvedArr = await Promise.all(topCandidates.map(function (tc) {
-            return resolveYouTubeMp4(tc.id).catch(function () { return null; });
+            return resolveYouTubeStreams(tc.id, { timeoutMs: session.remaining() }).catch(function () { return []; });
         }));
 
         var streams = [];
@@ -651,28 +596,15 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             var candObj = topCandidates[i];
             var resolved = resolvedArr[i];
             var badge2 = getChannelSubscriberBadge(candObj.channel, candObj.isVerified);
-            var streamName2 = '📺 ' + (candObj.channel || 'YouTube') + (badge2 ? ' ' + badge2 : '');
+            var streamName2 = '📺 ' + (candObj.channel || 'YouTube') + (badge2 ? ' ' + badge2 : '') + BETA_LABEL;
             var viewsLabel = candObj.views ? ' · 👁 ' + candObj.views : '';
 
-            // 1. Nuvio ExoPlayer için doğrudan oynatılabilir MP4 / HLS akışı
-            if (resolved && resolved.url) {
-                var qLabel = resolved.quality || (resolved.isHls ? '1080p' : '360p');
-                streams.push({
-                    name: streamName2,
-                    title: '⌜ YouTube ⌟ | ' + streamName2 + ' (' + qLabel + ')',
-                    description: candObj.title + viewsLabel,
-                    url: resolved.url,
-                    quality: qLabel,
-                    isHls: !!resolved.isHls,
-                    format: resolved.format || (resolved.isHls ? 'hls' : 'mp4'),
-                    provider: 'youtube_dizifilm',
-                    headers: resolved.headers,
-                    behaviorHints: { headers: resolved.headers }
-                });
-            }
+            (resolved || []).forEach(function (source) {
+                streams.push(toStream(source, streamName2, candObj.title + viewsLabel));
+            });
 
             // 2. Stremio için YouTube embed akışı (ExoPlayer parser çökmesini önlemek için url YOK)
-            streams.push({
+            if (includeEmbed) streams.push({
                 name: streamName2,
                 title: '⌜ YouTube ⌟ | ' + streamName2 + ' (YouTube Embed)',
                 description: candObj.title + viewsLabel,
@@ -681,7 +613,8 @@ async function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
             });
         }
 
-        return sortStreamsByQuality(streams);
+        return sortStreamsByQuality(streams.filter(function (s) { return !!s.url; }))
+            .concat(streams.filter(function (s) { return !!s.ytId; }));
     } catch (e) {
         return [];
     }
@@ -821,7 +754,8 @@ async function getMeta(id) {
     }
 }
 
-var _exports = wrapAll({ getStreams: getStreams, getCatalog: getCatalog, getMeta: getMeta }, cfgReady);
+var _exports = wrapAll({ getCatalog: getCatalog, getMeta: getMeta }, cfgReady);
+_exports.getStreams = getStreams;
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = _exports;

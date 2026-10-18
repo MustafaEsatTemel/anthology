@@ -1,7 +1,7 @@
 /**
  * Anthology Provider: youtube_dizifilm
  * Built from src/youtube_dizifilm/index.js
- * Build: v1.8.25 (anthology build system)
+ * Build: v1.8.27 (anthology build system)
  */
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
@@ -115,7 +115,10 @@ var require_config = __commonJS({
       }
       return null;
     }
-    function _cfgFetch() {
+    function _cfgFetch(options) {
+      if (options && typeof options.fetchJson === "function") {
+        return options.fetchJson(CONFIG_URL, { headers: { "Accept": "application/json" } });
+      }
       return fetch(CONFIG_URL, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -129,7 +132,7 @@ var require_config = __commonJS({
         });
       });
     }
-    function loadConfig2() {
+    function loadConfig2(options) {
       var now = Date.now();
       if (_cfg && now - _cfgTime < CONFIG_TTL_MS) return Promise.resolve(_cfg);
       var local = _cfgLocalRead();
@@ -138,7 +141,7 @@ var require_config = __commonJS({
         _cfgTime = now;
         return Promise.resolve(_cfg);
       }
-      return _cfgFetch().then(function(c) {
+      return _cfgFetch(options).then(function(c) {
         _cfg = c && typeof c === "object" ? c : {};
         _cfgTime = now;
         return _cfg;
@@ -319,7 +322,7 @@ var require_turkish_series = __commonJS({
       }
       return null;
     }
-    function resolveSeriesInfo2(rawId, mediaType, apiKey) {
+    function resolveSeriesInfo(rawId, mediaType, apiKey) {
       return __async(this, null, function* () {
         var out = { title: "", origTitle: "", numericId: "", imdbId: "", aliases: [], seasons: [], kind: "unknown", type: "tv" };
         var key = apiKey || "500330721680edb6d5f7f12ba7cd9023";
@@ -439,79 +442,279 @@ var require_turkish_series = __commonJS({
     }
     module2.exports = {
       normalizeSeriesId: normalizeSeriesId2,
-      resolveSeriesInfo: resolveSeriesInfo2,
+      resolveSeriesInfo,
       seriesSearchTitles,
       asciiFold: asciiFold2
     };
   }
 });
 
-// src/shared/ytmp4.js
-var require_ytmp4 = __commonJS({
-  "src/shared/ytmp4.js"(exports2, module2) {
-    var { timeoutSignal: timeoutSignal2 } = require_http();
-    function resolveYouTubeMp42(ytId) {
-      return __async(this, null, function* () {
-        try {
-          var key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-          var res = yield fetch("https://www.youtube.com/youtubei/v1/player?key=" + key, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
-            },
-            body: JSON.stringify({
-              context: { client: { clientName: "ANDROID", clientVersion: "20.10.38" } },
-              videoId: ytId
-            }),
-            signal: timeoutSignal2(6e3)
-          });
-          if (!res.ok) return null;
-          var data = yield res.json();
-          if (!data.streamingData) return null;
-          var details = data.videoDetails || {};
-          var author = details.author || null;
-          var channelId = details.channelId || null;
-          var videoTitle = details.title || null;
-          var viewCount = details.viewCount || null;
-          if (data.streamingData.hlsManifestUrl) {
-            return {
-              url: data.streamingData.hlsManifestUrl,
-              quality: "1080p",
-              isHls: true,
-              format: "hls",
-              author,
-              channelId,
-              videoTitle,
-              viewCount,
-              headers: { "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip" }
-            };
-          }
-          if (data.streamingData.formats) {
-            var formats = data.streamingData.formats.filter(function(f) {
-              return f.url && (f.mimeType || "").indexOf("mp4") !== -1;
-            });
-            if (formats.length > 0) {
-              return {
-                url: formats[0].url,
-                quality: formats[0].qualityLabel || "360p",
-                isHls: false,
-                format: "mp4",
-                author,
-                channelId,
-                videoTitle,
-                viewCount,
-                headers: { "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip" }
-              };
+// src/youtube_dizifilm/http.js
+var require_http2 = __commonJS({
+  "src/youtube_dizifilm/http.js"(exports2, module2) {
+    function createSession2(timeoutMs) {
+      var deadline = Date.now() + timeoutMs;
+      var pending = [];
+      var closed = false;
+      return {
+        remaining: function() {
+          return closed ? 0 : Math.max(0, deadline - Date.now());
+        },
+        request: function(url, options, read, capMs) {
+          var ms = Math.min(capMs || timeoutMs, closed ? 0 : deadline - Date.now());
+          if (ms <= 0) return Promise.resolve(null);
+          return new Promise(function(resolve) {
+            var controller = typeof AbortController === "function" ? new AbortController() : null;
+            var done = false;
+            var timer;
+            function finish(value) {
+              if (done) return;
+              done = true;
+              clearTimeout(timer);
+              var index = pending.indexOf(cancel);
+              if (index !== -1) pending.splice(index, 1);
+              resolve(value);
             }
-          }
-        } catch (e) {
+            function cancel() {
+              finish(null);
+              if (controller) controller.abort();
+            }
+            pending.push(cancel);
+            timer = setTimeout(cancel, ms);
+            var opts = Object.assign({}, options || {});
+            if (controller) opts.signal = controller.signal;
+            Promise.resolve().then(function() {
+              if (done) return null;
+              return fetch(url, opts);
+            }).then(function(res) {
+              if (!res) return null;
+              if (done || !res.ok) {
+                if (res.body && typeof res.body.cancel === "function") res.body.cancel().catch(function() {
+                });
+                return null;
+              }
+              return read(res);
+            }).then(finish, function() {
+              finish(null);
+            });
+          });
+        },
+        close: function() {
+          closed = true;
+          pending.slice().forEach(function(cancel) {
+            cancel();
+          });
         }
-        return null;
+      };
+    }
+    module2.exports = { createSession: createSession2 };
+  }
+});
+
+// src/youtube_dizifilm/playback.js
+var require_playback = __commonJS({
+  "src/youtube_dizifilm/playback.js"(exports2, module2) {
+    var { createSession: createSession2 } = require_http2();
+    var SAFARI_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15";
+    var ANDROID_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip";
+    var CLIENTS = [
+      { clientName: "WEB", clientVersion: "2.20261002.01.00", userAgent: SAFARI_UA },
+      { clientName: "ANDROID", clientVersion: "20.10.38", userAgent: ANDROID_UA }
+    ];
+    function mediaUrl(url) {
+      return typeof url === "string" && /^https:\/\/(?:[a-z0-9-]+\.)*googlevideo\.com\//i.test(url);
+    }
+    function header(res, name) {
+      return res.headers && typeof res.headers.get === "function" ? res.headers.get(name) || "" : "";
+    }
+    function attributes(line) {
+      var out = {};
+      var re = /([A-Z0-9-]+)=("[^"]*"|[^,]*)/g;
+      var m;
+      while (m = re.exec(line)) out[m[1]] = m[2].replace(/^"|"$/g, "");
+      return out;
+    }
+    function absoluteUrl(value, base) {
+      if (/^https:\/\//i.test(value)) return value;
+      var origin = base.match(/^https:\/\/[^/]+/i);
+      if (!origin || /^\/\//.test(value) || /^[a-z]+:/i.test(value)) return "";
+      if (value.charAt(0) === "/") return origin[0] + value;
+      return base.replace(/[?#].*$/, "").replace(/[^/]*$/, "") + value;
+    }
+    function compatibleCodecs(codecs) {
+      var parts = String(codecs || "").split(",").map(function(s) {
+        return s.trim().toLowerCase();
+      });
+      return parts.length === 2 && parts.some(function(s) {
+        return /^avc1\./.test(s);
+      }) && parts.some(function(s) {
+        return s === "mp4a.40.2";
       });
     }
-    module2.exports = { resolveYouTubeMp4: resolveYouTubeMp42 };
-    if (typeof globalThis !== "undefined") globalThis.resolveYouTubeMp4 = resolveYouTubeMp42;
+    function parseHlsVariants(text, base) {
+      if (!/^#EXTM3U(?:\s|$)/.test(text.trim())) return [];
+      var lines = text.split(/\r?\n/).map(function(s) {
+        return s.trim();
+      });
+      var groups = {};
+      lines.forEach(function(line) {
+        if (line.indexOf("#EXT-X-MEDIA:") !== 0) return;
+        var a2 = attributes(line);
+        if (a2.TYPE === "AUDIO") {
+          var id = a2["GROUP-ID"];
+          if (!groups[id]) groups[id] = [];
+          groups[id].push(a2);
+        }
+      });
+      var variants = [];
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf("#EXT-X-STREAM-INF:") !== 0) continue;
+        var a = attributes(lines[i]);
+        var resolution = (a.RESOLUTION || "").match(/^(\d+)x(\d+)$/);
+        if (!resolution || !compatibleCodecs(a.CODECS)) continue;
+        var height = Number(resolution[2]);
+        if (height > 1080 || height < 1 || Number(a["FRAME-RATE"] || 0) > 30) continue;
+        if (a.AUDIO && (!groups[a.AUDIO] || groups[a.AUDIO].some(function(g) {
+          return !!g.URI;
+        }))) continue;
+        var next = i + 1;
+        while (next < lines.length && !lines[next]) next++;
+        if (!lines[next] || lines[next].charAt(0) === "#") continue;
+        var url = absoluteUrl(lines[next], base);
+        if (mediaUrl(url)) variants.push({ url, height, bandwidth: Number(a.BANDWIDTH || 0) });
+      }
+      return variants.sort(function(a2, b) {
+        return b.height - a2.height || b.bandwidth - a2.bandwidth;
+      });
+    }
+    function validateHls(session, url, headers) {
+      return __async(this, null, function* () {
+        return session.request(url, { headers }, function(res) {
+          return __async(this, null, function* () {
+            if (/text\/html/i.test(header(res, "content-type"))) return false;
+            var text = yield res.text();
+            if (!/^#EXTM3U(?:\s|$)/.test(text.trim()) || !/#EXTINF:/.test(text)) return false;
+            if (/#EXT-X-KEY:(?![^\r\n]*METHOD=NONE)/.test(text)) return false;
+            var segment = text.split(/\r?\n/).map(function(s) {
+              return s.trim();
+            }).find(function(s) {
+              return s && s.charAt(0) !== "#";
+            });
+            return !!segment && mediaUrl(absoluteUrl(segment, url));
+          });
+        }, 1200);
+      });
+    }
+    function validateMp4(session, url, headers) {
+      return __async(this, null, function* () {
+        var probe = url + (url.indexOf("?") === -1 ? "?" : "&") + "range=0-1023";
+        return session.request(probe, { headers: Object.assign({}, headers, { Range: "bytes=0-1023" }) }, function(res) {
+          return __async(this, null, function* () {
+            var type = header(res, "content-type");
+            var length = Number(header(res, "content-length"));
+            var range = header(res, "content-range");
+            var ok = /^video\/mp4(?:;|$)/i.test(type) && (res.status === 206 || length > 0 && length <= 1024);
+            if (range && !/^bytes 0-\d+\//i.test(range)) ok = false;
+            if (res.body && typeof res.body.cancel === "function") yield res.body.cancel();
+            return ok;
+          });
+        }, 1200);
+      });
+    }
+    function resolveYouTubeStreams2(id, options) {
+      return __async(this, null, function* () {
+        options = options || {};
+        if (!/^[a-zA-Z0-9_-]{11}$/.test(id)) return [];
+        var session = createSession2(Math.min(4500, options.timeoutMs === void 0 ? 4500 : options.timeoutMs));
+        var streams = [];
+        try {
+          yield Promise.all(CLIENTS.map(function(client) {
+            return __async(this, null, function* () {
+              var headers = { "User-Agent": client.userAgent };
+              var data = yield session.request("https://www.youtube.com/youtubei/v1/player", {
+                method: "POST",
+                headers: Object.assign({ "Content-Type": "application/json" }, headers),
+                body: JSON.stringify({
+                  videoId: id,
+                  context: { client: Object.assign({ hl: "tr", gl: "TR" }, client) }
+                })
+              }, function(res) {
+                return res.json();
+              }, 2e3);
+              if (!data || !data.playabilityStatus || data.playabilityStatus.status !== "OK" || !data.streamingData) return;
+              var sd = data.streamingData;
+              var details = data.videoDetails || {};
+              if (details.videoId && details.videoId !== id) return;
+              function emit(url, height, isHls) {
+                streams.push({
+                  url,
+                  quality: height ? height + "p" : "Bilinmiyor",
+                  height,
+                  isHls,
+                  format: isHls ? "hls" : "mp4",
+                  headers,
+                  author: details.author || "",
+                  videoTitle: details.title || "",
+                  viewCount: details.viewCount || ""
+                });
+              }
+              yield Promise.all([
+                (function() {
+                  return __async(this, null, function* () {
+                    if (!mediaUrl(sd.hlsManifestUrl)) return;
+                    var manifest = yield session.request(sd.hlsManifestUrl, { headers }, function(res) {
+                      return res.text();
+                    }, 1200);
+                    if (!manifest) return;
+                    var variants = parseHlsVariants(manifest, sd.hlsManifestUrl);
+                    var selected = variants.slice(0, 1);
+                    var lower = variants.find(function(v) {
+                      return v.height <= 720 && selected[0] && v.height < selected[0].height;
+                    });
+                    if (lower) selected.push(lower);
+                    yield Promise.all(selected.map(function(v) {
+                      return __async(this, null, function* () {
+                        if (yield validateHls(session, v.url, headers)) emit(v.url, v.height, true);
+                      });
+                    }));
+                  });
+                })(),
+                (function() {
+                  return __async(this, null, function* () {
+                    var formats = (Array.isArray(sd.formats) ? sd.formats : []).filter(function(f2) {
+                      if (!f2 || typeof f2 !== "object") return false;
+                      var codec = (f2.mimeType || "").match(/codecs="([^"]+)"/);
+                      return mediaUrl(f2.url) && /^video\/mp4\b/.test(f2.mimeType || "") && codec && compatibleCodecs(codec[1]) && !f2.drmFamilies && !f2.signatureCipher && !f2.cipher && Number(f2.height || 0) <= 1080 && Number(f2.fps || 0) <= 30;
+                    }).sort(function(a, b) {
+                      return Number(b.height || 0) - Number(a.height || 0);
+                    });
+                    for (var i = 0; i < Math.min(formats.length, 2); i++) {
+                      var f = formats[i];
+                      if (yield validateMp4(session, f.url, headers)) {
+                        emit(f.url, Number(f.height) || 0, false);
+                        break;
+                      }
+                    }
+                  });
+                })()
+              ]);
+            });
+          }));
+        } finally {
+          session.close();
+        }
+        var seen = {};
+        return streams.sort(function(a, b) {
+          return b.height - a.height || Number(b.isHls) - Number(a.isHls);
+        }).filter(function(s) {
+          var key = s.format + ":" + s.height;
+          if (seen[key]) return false;
+          seen[key] = true;
+          return true;
+        });
+      });
+    }
+    module2.exports = { resolveYouTubeStreams: resolveYouTubeStreams2, parseHlsVariants };
   }
 });
 
@@ -519,12 +722,20 @@ var require_ytmp4 = __commonJS({
 var { sortStreamsByQuality } = require_quality();
 var { loadConfig, val, wrapAll } = require_config();
 var { timeoutSignal } = require_http();
-var { normalizeSeriesId, resolveSeriesInfo } = require_turkish_series();
-var { resolveYouTubeMp4 } = require_ytmp4();
+var { normalizeSeriesId } = require_turkish_series();
+var { resolveYouTubeStreams } = require_playback();
+var { createSession } = require_http2();
 var _cfgReady = null;
+var BETA_LABEL = " \xB7 BETA 1.8.27";
 function cfgReady() {
   if (!_cfgReady) {
-    _cfgReady = loadConfig().then(function() {
+    var configSession = createSession(500);
+    _cfgReady = loadConfig({ fetchJson: function(url, options) {
+      return configSession.request(url, options, function(res) {
+        return res.json();
+      });
+    } }).then(function() {
+      configSession.close();
       var v;
       v = val("api_keys.tmdb");
       if (v) TMDB_API_KEY = String(v);
@@ -607,7 +818,9 @@ function matchesEpisode(videoTitle, season, episode, cumEpisode) {
   var norm = asciiFold(videoTitle);
   var epCandidates = [episode];
   if (cumEpisode && cumEpisode !== episode) {
-    epCandidates.push(cumEpisode);
+    epCandidates = [cumEpisode];
+    var explicitSeason = norm.match(/(?:^|[^0-9])([1-9]\d?)\s*\.?\s*(?:sezon|season)\b/i);
+    if (explicitSeason && Number(explicitSeason[1]) === Number(season)) epCandidates.push(episode);
   }
   var matchedEp = false;
   for (var i = 0; i < epCandidates.length; i++) {
@@ -626,7 +839,7 @@ function matchesEpisode(videoTitle, season, episode, cumEpisode) {
     }
   }
   if (!matchedEp) return false;
-  if (season > 1) {
+  if (season >= 1) {
     var otherSeasonRegex = /(?:^|[^0-9])([1-9]\d?)\s*\.?\s*(?:sezon|season)(?:[^0-9]|$)/i;
     var sMatch = norm.match(otherSeasonRegex);
     if (sMatch && parseInt(sMatch[1], 10) !== season) {
@@ -691,8 +904,8 @@ function formatNumberCompact(n) {
   return String(num);
 }
 function matchesTitle(videoTitle, targetTitle) {
-  var vNorm = asciiFold(videoTitle).toLowerCase();
-  var tNorm = asciiFold(targetTitle).toLowerCase();
+  var vNorm = cleanTitle(videoTitle);
+  var tNorm = cleanTitle(targetTitle);
   var tWords = tNorm.split(/\s+/).filter(function(w) {
     return w.length > 1;
   });
@@ -709,84 +922,32 @@ function matchesTitle(videoTitle, targetTitle) {
   }
   return true;
 }
-function searchYouTube(query) {
+function searchYouTube(query, parentSession) {
   return __async(this, null, function* () {
+    var session = parentSession || createSession(2200);
     try {
-      var resMweb = yield fetch("https://www.youtube.com/youtubei/v1/search?key=" + INNERTUBE_KEY, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-          context: {
-            client: {
-              clientName: "MWEB",
-              clientVersion: "2.20240313.00.00",
-              hl: "tr",
-              gl: "TR"
-            }
-          }
-        }),
-        signal: timeoutSignal(6e3)
-      });
-      if (resMweb.ok) {
-        var dataMweb = yield resMweb.json();
-        var resultsMweb = _parseInnertubeMwebSearch(dataMweb);
-        if (resultsMweb.length > 0) return resultsMweb;
+      var clients = ["MWEB", "WEB"];
+      for (var i = 0; i < clients.length; i++) {
+        var data = yield session.request("https://www.youtube.com/youtubei/v1/search?key=" + INNERTUBE_KEY, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, context: { client: {
+            clientName: clients[i],
+            clientVersion: "2.20261002.01.00",
+            hl: "tr",
+            gl: "TR"
+          } } })
+        }, function(res) {
+          return res.json();
+        }, 1100);
+        if (!data) continue;
+        var results = clients[i] === "MWEB" ? _parseInnertubeMwebSearch(data) : _parseInnertubeWebSearch(data);
+        if (results.length) return results;
       }
-    } catch (e) {
+      return [];
+    } finally {
+      if (!parentSession) session.close();
     }
-    try {
-      var resWeb = yield fetch("https://www.youtube.com/youtubei/v1/search?key=" + INNERTUBE_KEY, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query,
-          context: {
-            client: {
-              clientName: "WEB",
-              clientVersion: "2.20240313.00.00",
-              hl: "tr",
-              gl: "TR"
-            }
-          }
-        }),
-        signal: timeoutSignal(6e3)
-      });
-      if (resWeb.ok) {
-        var dataWeb = yield resWeb.json();
-        var results = _parseInnertubeWebSearch(dataWeb);
-        if (results.length > 0) return results;
-      }
-    } catch (e2) {
-    }
-    try {
-      var resAnd = yield fetch("https://www.youtube.com/youtubei/v1/search?key=" + INNERTUBE_KEY, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
-          "X-Goog-Api-Format-Version": "2"
-        },
-        body: JSON.stringify({
-          query,
-          context: {
-            client: {
-              clientName: "ANDROID",
-              clientVersion: "20.10.38",
-              hl: "tr",
-              gl: "TR"
-            }
-          }
-        }),
-        signal: timeoutSignal(6e3)
-      });
-      if (resAnd.ok) {
-        var dataAnd = yield resAnd.json();
-        return _parseInnertubeAndroidSearch(dataAnd);
-      }
-    } catch (e3) {
-    }
-    return [];
   });
 }
 function _parseInnertubeMwebSearch(data) {
@@ -821,7 +982,9 @@ function _parseInnertubeMwebSearch(data) {
           channel,
           views: viewsText,
           viewsNum,
-          isVerified: true
+          isVerified: Array.isArray(v.ownerBadges) && v.ownerBadges.some(function(b) {
+            return b.metadataBadgeRenderer && /VERIFIED/.test(b.metadataBadgeRenderer.style || "");
+          })
         });
       }
     }
@@ -869,50 +1032,79 @@ function _parseInnertubeWebSearch(data) {
   }
   return results;
 }
-function _parseInnertubeAndroidSearch(data) {
-  var results = [];
-  var seenIds = {};
-  try {
-    var sections = data && data.contents && data.contents.sectionListRenderer && data.contents.sectionListRenderer.contents || [];
-    for (var s = 0; s < sections.length; s++) {
-      var items = sections[s].itemSectionRenderer && sections[s].itemSectionRenderer.contents || [];
-      for (var i = 0; i < items.length; i++) {
-        var vr = items[i].compactVideoRenderer || items[i].videoRenderer;
-        if (!vr || !vr.videoId) continue;
-        var vid = vr.videoId;
-        if (seenIds[vid]) continue;
-        seenIds[vid] = true;
-        var title = vr.title && vr.title.runs && vr.title.runs[0] && vr.title.runs[0].text || vr.title && vr.title.simpleText || "";
-        var duration = vr.lengthText && vr.lengthText.simpleText || "";
-        var channel = vr.shortBylineText && vr.shortBylineText.runs && vr.shortBylineText.runs[0] && vr.shortBylineText.runs[0].text || vr.ownerText && vr.ownerText.runs && vr.ownerText.runs[0] && vr.ownerText.runs[0].text || "";
-        var views = vr.shortViewCountText && vr.shortViewCountText.runs && vr.shortViewCountText.runs[0] && vr.shortViewCountText.runs[0].text || vr.viewCountText && vr.viewCountText.simpleText || "";
-        views = views.replace(/\u00a0/g, " ").replace(/\s*görüntüleme\s*/i, "").trim();
-        var isVerified = false;
-        var badges = vr.badges || vr.ownerBadges;
-        if (Array.isArray(badges)) {
-          isVerified = badges.some(function(b) {
-            return b && b.metadataBadgeRenderer && b.metadataBadgeRenderer.style && b.metadataBadgeRenderer.style.indexOf("VERIFIED") !== -1;
-          });
-        }
-        results.push({
-          id: vid,
-          title,
-          duration,
-          durationSec: parseDurationSec(duration),
-          channel,
-          views,
-          viewsNum: parseViewCount(views),
-          isVerified
-        });
-      }
+function toStream(source, name, description) {
+  var quality = source.quality || "Bilinmiyor";
+  return {
+    name,
+    title: "\u231C YouTube \u231F | " + name + " (" + quality + " \xB7 " + (source.isHls ? "HLS" : "MP4") + ")",
+    description,
+    url: source.url,
+    quality,
+    isHls: source.isHls,
+    format: source.format,
+    provider: "youtube_dizifilm",
+    headers: source.headers,
+    behaviorHints: {
+      notWebReady: true,
+      headers: source.headers,
+      proxyHeaders: { request: source.headers }
     }
-  } catch (e) {
-  }
-  return results;
+  };
+}
+function resolveTitleInfo(rawId, type, session) {
+  return __async(this, null, function* () {
+    var norm = normalizeSeriesId(rawId);
+    var isSeries = type === "tv" || type === "series";
+    var kind = isSeries ? "tv" : "movie";
+    var id = norm.id;
+    var fallback = (isSeries ? POPULAR_DIZILER : POPULAR_FILMLER).find(function(v) {
+      return v.tmdbId === id;
+    });
+    var result = { title: fallback ? fallback.name : norm.kind === "title" ? id : "", seasons: [] };
+    function json(path) {
+      return __async(this, null, function* () {
+        return session.request(
+          "https://api.themoviedb.org/3/" + path + (path.indexOf("?") === -1 ? "?" : "&") + "api_key=" + TMDB_API_KEY + "&language=tr-TR",
+          {},
+          function(res) {
+            return res.json();
+          },
+          1e3
+        );
+      });
+    }
+    if (norm.kind === "imdb") {
+      var found = yield json("find/" + id + "?external_source=imdb_id");
+      var hits = found && found[isSeries ? "tv_results" : "movie_results"];
+      if (!hits || !hits.length) return result;
+      id = String(hits[0].id);
+      result.title = hits[0].name || hits[0].title || result.title;
+    } else if (norm.kind === "title") {
+      return result;
+    }
+    var data = yield json(kind + "/" + id);
+    if (data) {
+      result.title = data.name || data.title || result.title;
+      result.seasons = data.seasons || [];
+    }
+    return result;
+  });
 }
 function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
   return __async(this, null, function* () {
+    var session = createSession(9e3);
     try {
+      yield cfgReady();
+      return yield getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, session);
+    } finally {
+      session.close();
+    }
+  });
+}
+function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, session) {
+  return __async(this, null, function* () {
+    try {
+      var includeEmbed = !!(tmdbIdOrArgs && typeof tmdbIdOrArgs === "object" && tmdbIdOrArgs.client === "stremio");
       var rawId = tmdbIdOrArgs;
       var sNum = seasonNum || 1;
       var eNum = episodeNum || 1;
@@ -923,48 +1115,44 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         sNum = tmdbIdOrArgs.season || tmdbIdOrArgs.seasonNum || sNum;
         eNum = tmdbIdOrArgs.episode || tmdbIdOrArgs.episodeNum || eNum;
       }
+      sNum = Math.max(1, parseInt(sNum, 10) || 1);
+      eNum = Math.max(1, parseInt(eNum, 10) || 1);
       rawId = String(rawId || "").trim();
       var directYtId = null;
       if (/^[a-zA-Z0-9_-]{11}$/.test(rawId)) {
         directYtId = rawId;
       } else if (rawId.startsWith("youtube:video:")) {
-        directYtId = rawId.replace("youtube:video:", "");
+        var suppliedId = rawId.replace("youtube:video:", "");
+        if (!/^[a-zA-Z0-9_-]{11}$/.test(suppliedId)) return [];
+        directYtId = suppliedId;
       } else if (rawId.includes("youtube.com/") || rawId.includes("youtu.be/")) {
-        var m = rawId.match(/(?:youtube\.com\/(?:embed|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+        var m = rawId.match(/(?:youtube\.com\/(?:embed\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
         if (m) directYtId = m[1];
       }
       if (directYtId) {
         var streams = [];
-        var streamData = yield resolveYouTubeMp4(directYtId);
+        var directStreams = yield resolveYouTubeStreams(directYtId, { timeoutMs: session.remaining() });
+        var streamData = directStreams[0];
         var chName = streamData && streamData.author || "YouTube";
-        var badge = getChannelSubscriberBadge(chName, true);
-        var streamName = "\u{1F4FA} " + chName + (badge ? " " + badge : "");
+        var streamName = "\u{1F4FA} " + chName + BETA_LABEL;
         var vTitle = streamData && streamData.videoTitle || "";
         var vViews = streamData && streamData.viewCount ? formatNumberCompact(streamData.viewCount) : "";
         var viewsTag = vViews ? " \xB7 \u{1F441} " + vViews : "";
-        if (streamData && streamData.url) {
-          var qBase = streamData.quality || (streamData.isHls ? "1080p" : "360p");
-          streams.push({
-            name: streamName,
-            title: "\u231C YouTube \u231F | " + streamName + " (" + qBase + ")",
-            description: vTitle + viewsTag,
-            url: streamData.url,
-            quality: qBase,
-            isHls: !!streamData.isHls,
-            format: streamData.format || (streamData.isHls ? "hls" : "mp4"),
-            provider: "youtube_dizifilm",
-            headers: streamData.headers,
-            behaviorHints: { headers: streamData.headers }
-          });
-        }
-        streams.push({
+        directStreams.forEach(function(resolved2) {
+          streams.push(toStream(resolved2, streamName, vTitle + viewsTag));
+        });
+        if (includeEmbed) streams.push({
           name: streamName,
           title: "\u231C YouTube \u231F | " + streamName + " (YouTube Embed)",
           description: vTitle + viewsTag,
           ytId: directYtId,
           provider: "youtube_dizifilm"
         });
-        return sortStreamsByQuality(streams);
+        return sortStreamsByQuality(streams.filter(function(s2) {
+          return !!s2.url;
+        })).concat(streams.filter(function(s2) {
+          return !!s2.ytId;
+        }));
       }
       if (rawId.startsWith("youtube:")) {
         var parts = rawId.split(":");
@@ -981,8 +1169,9 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         if (!episodeNum && idNorm.episode > 0) eNum = idNorm.episode;
       }
       var isSeries = mType === "tv" || mType === "series";
-      var info = yield resolveSeriesInfo(rawId, mType, TMDB_API_KEY);
-      var targetTitle = info.title || rawId;
+      var info = yield resolveTitleInfo(rawId, mType, session);
+      var targetTitle = info.title;
+      if (!targetTitle || session.remaining() <= 0) return [];
       var cumEpisode = eNum;
       if (isSeries && sNum > 1 && Array.isArray(info.seasons) && info.seasons.length > 0) {
         var sum = 0;
@@ -1006,7 +1195,7 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         searchQueries.push(targetTitle + " Tek Par\xE7a");
       }
       var searchResultsArr = yield Promise.all(searchQueries.map(function(q) {
-        return searchYouTube(q);
+        return searchYouTube(q, session);
       }));
       var candidateVideos = [];
       var seenVid = {};
@@ -1050,8 +1239,8 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         }
       }
       var resolvedArr = yield Promise.all(topCandidates.map(function(tc) {
-        return resolveYouTubeMp4(tc.id).catch(function() {
-          return null;
+        return resolveYouTubeStreams(tc.id, { timeoutMs: session.remaining() }).catch(function() {
+          return [];
         });
       }));
       var streams = [];
@@ -1059,24 +1248,12 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
         var candObj = topCandidates[i];
         var resolved = resolvedArr[i];
         var badge2 = getChannelSubscriberBadge(candObj.channel, candObj.isVerified);
-        var streamName2 = "\u{1F4FA} " + (candObj.channel || "YouTube") + (badge2 ? " " + badge2 : "");
+        var streamName2 = "\u{1F4FA} " + (candObj.channel || "YouTube") + (badge2 ? " " + badge2 : "") + BETA_LABEL;
         var viewsLabel = candObj.views ? " \xB7 \u{1F441} " + candObj.views : "";
-        if (resolved && resolved.url) {
-          var qLabel = resolved.quality || (resolved.isHls ? "1080p" : "360p");
-          streams.push({
-            name: streamName2,
-            title: "\u231C YouTube \u231F | " + streamName2 + " (" + qLabel + ")",
-            description: candObj.title + viewsLabel,
-            url: resolved.url,
-            quality: qLabel,
-            isHls: !!resolved.isHls,
-            format: resolved.format || (resolved.isHls ? "hls" : "mp4"),
-            provider: "youtube_dizifilm",
-            headers: resolved.headers,
-            behaviorHints: { headers: resolved.headers }
-          });
-        }
-        streams.push({
+        (resolved || []).forEach(function(source) {
+          streams.push(toStream(source, streamName2, candObj.title + viewsLabel));
+        });
+        if (includeEmbed) streams.push({
           name: streamName2,
           title: "\u231C YouTube \u231F | " + streamName2 + " (YouTube Embed)",
           description: candObj.title + viewsLabel,
@@ -1084,7 +1261,11 @@ function getStreams(tmdbIdOrArgs, mediaType, seasonNum, episodeNum) {
           provider: "youtube_dizifilm"
         });
       }
-      return sortStreamsByQuality(streams);
+      return sortStreamsByQuality(streams.filter(function(s2) {
+        return !!s2.url;
+      })).concat(streams.filter(function(s2) {
+        return !!s2.ytId;
+      }));
     } catch (e) {
       return [];
     }
@@ -1210,7 +1391,8 @@ function getMeta(id) {
     }
   });
 }
-var _exports = wrapAll({ getStreams, getCatalog, getMeta }, cfgReady);
+var _exports = wrapAll({ getCatalog, getMeta }, cfgReady);
+_exports.getStreams = getStreams;
 if (typeof module !== "undefined" && module.exports) {
   module.exports = _exports;
 }

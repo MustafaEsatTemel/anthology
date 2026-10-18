@@ -121,7 +121,7 @@ Nuvio ve Stremio ana sayfasında canlı TV kanallarını kategorilere ayrılmı�
 | **HDFilmDelisi** | hdfilmdelisi.org (VidMody HLS) | 1080p HLS | Güncel Filmler ve JSON API Entegrasyonu |
 | **HDFilmIzle** | hdfilmizle.vip (Vidrame/Vidmoxy/FastPlay) | 1080p HLS Master | Çift Ses DUAL (TR Dublaj & Altyazı) + Çoklu VTT |
 | **LiderFilm** | liderfilmizle.vip (play.liderfilm.cc VOD / ag2m4 embed) | 1080p HLS Master | Yerli & Yabancı Film ve Dizi Arşivi, Senkronize VTT Altyazı |
-| **YouTube Dizi & Film** | youtube.com (Resmi Kanallar & Arşivler) | 1080p Resmî Akış / MP4 | Klasik Yeşilçam & Türk Sineması, BKM, Arzu Film ve Fanatik Arşivleri |
+| **YouTube Dizi & Film** | youtube.com (Resmi Kanallar & Arşivler) | HLS / MP4 (kaynağa bağlı kalite) | Klasik Yeşilçam & Türk Sineması, BKM, Arzu Film ve Fanatik Arşivleri |
 
 ---
 
@@ -137,7 +137,7 @@ Nuvio ve Stremio ana sayfasında canlı TV kanallarını kategorilere ayrılmı�
 | **DiziWatch** | diziwatch.ac (Pichive Player / Embed) | 1080p HLS / MP4 | Güncel Anime ve Yabancı Diziler Arşivi |
 | **DiziYou** | diziyou.one (Storage CDN) | 1080p HLS | Doğrudan Storage CDN + Türkçe VTT Altyazı |
 | **LiderFilm** | liderfilmizle.vip (JWPlayer / ag2m4) | 1080p HLS Master | Yerli & Yabancı Dizi Bölümleri, VTT Altyazı |
-| **YouTube Dizi & Film** | youtube.com (Resmi TV & Yapımcı Kanalları) | 1080p Resmî Akış / MP4 | Resmî Türk Dizileri (Kurtlar Vadisi, Ezel, Aşk-ı Memnu vb.), Kümülatif Bölüm Eşleştirme |
+| **YouTube Dizi & Film** | youtube.com (Resmi TV & Yapımcı Kanalları) | HLS / MP4 (kaynağa bağlı kalite) | Resmî Türk Dizileri (Kurtlar Vadisi, Ezel, Aşk-ı Memnu vb.), Kümülatif Bölüm Eşleştirme |
 | **SetFilmIzle** | setfilmizle.ltd (FastPlay/SetPlay) | 1080p HLS Master | Çift Ses DUAL + Türkçe/İngilizce Altyazı (Film & Dizi) |
 | **YabancıDizi** | yabancidizi.news (VidMoly Master) | 1080p HLS | Popüler Yabancı Diziler Arşivi |
 | **TvDiziler** | tvdiziler.tv (Twitter Amplify / Ciner / YouTube) | 1080p HLS / MP4 | Yerli TV Dizileri & Güncel Bölümler Arşivi |

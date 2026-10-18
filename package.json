@@ -1,6 +1,6 @@
 {
   "name": "anthology",
-  "version": "1.8.25",
+  "version": "1.8.27",
   "description": "Anthology - Nuvio ve Stremio için Doğrulanmış Türkçe Film, Dizi, Anime ve Canlı TV Eklenti Deposu",
   "main": "config.js",
   "scripts": {
@@ -12,7 +12,10 @@
     "test:addon": "node scripts/test_stremio_addon.js",
     "test:catalogs": "node scripts/test_all_catalogs.js",
     "test:providers": "node scripts/test_all_providers.js",
-    "test:playability": "node scripts/test_playability.js"
+    "test:playability": "node scripts/test_playability.js",
+    "test:youtube": "node tests/youtube_dizifilm.test.js",
+    "test:youtube:live": "node scripts/test_youtube_live.js --live",
+    "serve:youtube": "node scripts/serve_youtube_local.js"
   },
   "keywords": [
     "nuvio",

@@ -41,7 +41,10 @@ function _cfgLocalRead() {
     return null;
 }
 
-function _cfgFetch() {
+function _cfgFetch(options) {
+    if (options && typeof options.fetchJson === 'function') {
+        return options.fetchJson(CONFIG_URL, { headers: { 'Accept': 'application/json' } });
+    }
     return fetch(CONFIG_URL, {
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -54,7 +57,7 @@ function _cfgFetch() {
     });
 }
 
-function loadConfig() {
+function loadConfig(options) {
     var now = Date.now();
     if (_cfg && (now - _cfgTime < CONFIG_TTL_MS)) return Promise.resolve(_cfg);
 
@@ -65,7 +68,7 @@ function loadConfig() {
         return Promise.resolve(_cfg);
     }
 
-    return _cfgFetch()
+    return _cfgFetch(options)
         .then(function (c) {
             _cfg = (c && typeof c === 'object') ? c : {};
             _cfgTime = now;
