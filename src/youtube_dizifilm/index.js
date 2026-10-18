@@ -6,8 +6,6 @@ const { resolveYouTubeStreams } = require('./playback.js');
 const { createSession } = require('./http.js');
 
 var _cfgReady = null;
-// Temporary local-test marker; visible beside each channel in the source list.
-var BETA_LABEL = ' · BETA 1.8.27';
 function cfgReady() {
     if (!_cfgReady) {
         var configSession = createSession(500);
@@ -455,7 +453,7 @@ async function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum
             var directStreams = await resolveYouTubeStreams(directYtId, { timeoutMs: session.remaining() });
             var streamData = directStreams[0];
             var chName = (streamData && streamData.author) || 'YouTube';
-            var streamName = '📺 ' + chName + BETA_LABEL;
+            var streamName = '📺 ' + chName;
             var vTitle = (streamData && streamData.videoTitle) || '';
             var vViews = streamData && streamData.viewCount ? formatNumberCompact(streamData.viewCount) : '';
             var viewsTag = vViews ? ' · 👁 ' + vViews : '';
@@ -596,7 +594,7 @@ async function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum
             var candObj = topCandidates[i];
             var resolved = resolvedArr[i];
             var badge2 = getChannelSubscriberBadge(candObj.channel, candObj.isVerified);
-            var streamName2 = '📺 ' + (candObj.channel || 'YouTube') + (badge2 ? ' ' + badge2 : '') + BETA_LABEL;
+            var streamName2 = '📺 ' + (candObj.channel || 'YouTube') + (badge2 ? ' ' + badge2 : '');
             var viewsLabel = candObj.views ? ' · 👁 ' + candObj.views : '';
 
             (resolved || []).forEach(function (source) {

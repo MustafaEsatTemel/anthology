@@ -1,11 +1,8 @@
 # YouTube Dizi & Film — yerel test
 
-Bu değişiklikler yereldir. Commit/push veya dağıtım yapılmadı. Yerel sürüm
-`1.8.27`; paket, kilit dosyası, config, depo manifesti ve YouTube sağlayıcısı
-sürümleri eşitlendi. Diğer sağlayıcıların sürümleri değiştirilmedi.
-
-Kaynak adlarının sonunda geçici `BETA 1.8.27` işareti görünür. Bu işaret
-yerel test kodunun yüklendiğini ayırt etmek içindir.
+Bu değişiklikler `feat/youtube-dizifilm` dalında geliştirildi. Sürüm `1.8.29`;
+paket, kilit dosyası, config, depo manifesti ve YouTube sağlayıcısı sürümleri
+eşitlendi. Diğer sağlayıcıların sürümleri değiştirilmedi.
 
 ## Davranış
 

@@ -726,7 +726,6 @@ var { normalizeSeriesId } = require_turkish_series();
 var { resolveYouTubeStreams } = require_playback();
 var { createSession } = require_http2();
 var _cfgReady = null;
-var BETA_LABEL = " \xB7 BETA 1.8.27";
 function cfgReady() {
   if (!_cfgReady) {
     var configSession = createSession(500);
@@ -1134,7 +1133,7 @@ function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, sess
         var directStreams = yield resolveYouTubeStreams(directYtId, { timeoutMs: session.remaining() });
         var streamData = directStreams[0];
         var chName = streamData && streamData.author || "YouTube";
-        var streamName = "\u{1F4FA} " + chName + BETA_LABEL;
+        var streamName = "\u{1F4FA} " + chName;
         var vTitle = streamData && streamData.videoTitle || "";
         var vViews = streamData && streamData.viewCount ? formatNumberCompact(streamData.viewCount) : "";
         var viewsTag = vViews ? " \xB7 \u{1F441} " + vViews : "";
@@ -1248,7 +1247,7 @@ function getStreamsInternal(tmdbIdOrArgs, mediaType, seasonNum, episodeNum, sess
         var candObj = topCandidates[i];
         var resolved = resolvedArr[i];
         var badge2 = getChannelSubscriberBadge(candObj.channel, candObj.isVerified);
-        var streamName2 = "\u{1F4FA} " + (candObj.channel || "YouTube") + (badge2 ? " " + badge2 : "") + BETA_LABEL;
+        var streamName2 = "\u{1F4FA} " + (candObj.channel || "YouTube") + (badge2 ? " " + badge2 : "");
         var viewsLabel = candObj.views ? " \xB7 \u{1F441} " + candObj.views : "";
         (resolved || []).forEach(function(source) {
           streams.push(toStream(source, streamName2, candObj.title + viewsLabel));
